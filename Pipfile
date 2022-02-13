@@ -4,9 +4,11 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-"discord.py" = {extras = ["voice"], version = "*"}
 python-dotenv = "*"
 loguru = "*"
+py-cord = {extras = ["voice"], version = "*"}
+pynacl = "*"
+wavelink = "*"
 
 [dev-packages]
 black = "*"
