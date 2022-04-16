@@ -2,8 +2,8 @@ from async_timeout import timeout
 from discord.ext import commands
 import asyncio
 
-from notorious_discord_bot.cogs.music.song_queue import SongQueue
-from notorious_discord_bot.cogs.music.ytdl_source import VoiceError
+from notorious_discord_bot.cogs.music.util.song_queue import SongQueue
+from notorious_discord_bot.cogs.music.util.ytdl_source import VoiceError
 
 
 class VoiceState:

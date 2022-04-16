@@ -7,32 +7,33 @@ from loguru import logger
 
 import wavelink
 
-from notorious_discord_bot.cogs.music.song import Song
+from notorious_discord_bot.cogs.music.util.song import Song
 
-from notorious_discord_bot.cogs.music.voice_state import VoiceState
+from notorious_discord_bot.cogs.music.util.voice_state import VoiceState
 
-from .ytdl_source import VoiceError, YTDLError, YTDLSource
+from notorious_discord_bot.cogs.music.util.ytdl_source import VoiceError, YTDLError, YTDLSource
 
 
 class Music(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
         self.voice_states = {}
+        print(self.voice_states)
 
-        bot.loop.create_task(self.connect_lavalink_nodes())
+        # bot.loop.create_task(self.connect_lavalink_nodes())
 
-    async def connect_lavalink_nodes(self):
-        """Connect to lavalink node"""
-        await self.bot.wait_until_ready()
+    # async def connect_lavalink_nodes(self):
+    #     """Connect to lavalink node"""
+    #     await self.bot.wait_until_ready()
 
-        node = await wavelink.NodePool.create_node(
-            bot=self.bot, host="0.0.0.0", port=2333, password="I29SMxfZK/JTkS0SJjAi8g=="
-        )
+    #     node = await wavelink.NodePool.create_node(
+    #         bot=self.bot, host="0.0.0.0", port=2333, password="I29SMxfZK/JTkS0SJjAi8g=="
+    #     )
 
-    @commands.Cog.listener()
-    async def on_wavelink_node_ready(self, node: wavelink.Node):
-        """Event fired when a node has finished connecting"""
-        logger.info(f"Lavalink Node: <{node.identifier}> is ready")
+    # @commands.Cog.listener()
+    # async def on_wavelink_node_ready(self, node: wavelink.Node):
+    #     """Event fired when a node has finished connecting"""
+    #     logger.info(f"Lavalink Node: <{node.identifier}> is ready")
 
     def get_voice_state(self, ctx: commands.Context):
         state = self.voice_states.get(ctx.guild.id)
@@ -276,6 +277,7 @@ class Music(commands.Cog):
 
                 await ctx.voice_state.songs.put(song)
                 await ctx.send("Enqueued {}".format(str(source)))
+
 
     @_join.before_invoke
     @_play.before_invoke

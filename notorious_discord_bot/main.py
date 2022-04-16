@@ -9,7 +9,8 @@ from notorious_discord_bot.cogs.music.music import Music
 load_dotenv()
 
 bot = commands.Bot(
-    command_prefix=commands.when_mentioned_or("!"), description="Notorious music bot"
+    # command_prefix=commands.when_mentioned_or("!"), description="A bot to play music with, as well as some other stuff. Run !help to see what all I can do."
+        command_prefix=commands.when_mentioned_or("!"), description="A bot to play music with, as well as some other stuff. Run !help to see what all I can do."
 )
 
 @bot.event

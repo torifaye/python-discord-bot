@@ -1,6 +1,6 @@
 import discord
 
-from notorious_discord_bot.cogs.music.ytdl_source import YTDLSource
+from notorious_discord_bot.cogs.music.util.ytdl_source import YTDLSource
 
 class Song:
     __slots__ = ("source", "requester")

@@ -9,6 +9,7 @@ loguru = "*"
 py-cord = {extras = ["voice"], version = "*"}
 pynacl = "*"
 wavelink = "*"
+watchpoints = "*"
 
 [dev-packages]
 black = "*"
