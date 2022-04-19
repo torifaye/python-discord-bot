@@ -8,8 +8,8 @@ python-dotenv = "*"
 loguru = "*"
 py-cord = {extras = ["voice"], version = "*"}
 pynacl = "*"
-wavelink = "*"
 watchpoints = "*"
+wavelink = {editable = true, ref = "feature/filters", git = "https://github.com/PythonistaGuild/Wavelink.git"}
 
 [dev-packages]
 black = "*"

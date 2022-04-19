@@ -2,6 +2,8 @@ from async_timeout import timeout
 from discord.ext import commands
 import asyncio
 
+from wavelink import Queue
+
 from notorious_discord_bot.cogs.music.util.song_queue import SongQueue
 from notorious_discord_bot.cogs.music.util.ytdl_source import VoiceError
 
@@ -14,11 +16,10 @@ class VoiceState:
         self.current = None
         self.voice = None
         self.next = asyncio.Event()
-        self.songs = SongQueue()
+        self.songs = Queue()
 
         self._loop = False
         self._volume = 0.5
-        self.skip_votes = set()
 
         self.audio_player = bot.loop.create_task(self.audio_player_task())
 
@@ -74,8 +75,6 @@ class VoiceState:
         self.next.set()
 
     def skip(self):
-        self.skip_votes.clear()
-
         if self.is_playing:
             self.voice.stop()
 
