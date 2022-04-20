@@ -6,7 +6,7 @@ from discord.ext import commands
 from dotenv import load_dotenv
 from loguru import logger
 
-from notorious_discord_bot.cogs.music.lava_music import Music
+from notorious_discord_bot.cogs.music.music import Music
 
 load_dotenv()
 

@@ -1,274 +1,228 @@
-import json
 import math
+from wavelink import Equalizer, Filter
+import os
 import discord
 
 from discord.ext import commands
+from discord.commands import Option, slash_command
 from loguru import logger
 
 import wavelink
 
-from notorious_discord_bot.cogs.music.util.song import Song
-
-from notorious_discord_bot.cogs.music.util.voice_state import VoiceState
-
-from notorious_discord_bot.cogs.music.util.ytdl_source import VoiceError, YTDLError, YTDLSource
-
+from notorious_discord_bot.cogs.music.util.ytdl_source import YTDLSource
 
 class Music(commands.Cog):
-    def __init__(self, bot: commands.Bot):
-        self.bot = bot
-        self.voice_states = {}
+    def __init__(self, bot: commands.Bot) -> None:
+       self.bot = bot 
+       self.voice_states = {}
 
-    def get_voice_state(self, ctx: commands.Context):
-        state = self.voice_states.get(ctx.guild.id)
-        if not state:
-            state = VoiceState(self.bot, ctx)
-            self.voice_states[ctx.guild.id] = state
+       bot.loop.create_task(self.connect_lavalink_nodes())
 
-        return state
+    async def connect_lavalink_nodes(self):
+        """Connect to lavalink node"""
+        await self.bot.wait_until_ready()
+        
+        node = await wavelink.NodePool.create_node(
+            bot=self.bot, host="0.0.0.0", port=2333, password=os.getenv("WAVELINK_PW")
+        )
 
-    def cog_unload(self):
-        for state in self.voice_states.values():
-            self.bot.loop.create_task(state.stop())
+    @commands.Cog.listener()
+    async def on_wavelink_node_ready(self, node: wavelink.Node):
+        """Event fired when a node has finished connecting"""
+        logger.info(f"Lavalink Node: <{node.identifier}> is ready")
+
 
     def cog_check(self, ctx: commands.Context):
         if not ctx.guild:
             raise commands.NoPrivateMessage(
-                "This command can't be used in DM channels."
+                "This command can't be used in direct messages."
             )
 
         return True
 
-    async def cog_before_invoke(self, ctx: commands.Context):
-        ctx.voice_state = self.get_voice_state(ctx)
+    async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
+        await ctx.send(f"An error occurred: {str(error)}")
 
-    async def cog_command_error(
-        self, ctx: commands.Context, error: commands.CommandError
-    ):
-        await ctx.send("An error occurred: {}".format(str(error)))
-
-    @commands.command(name="join", invoke_without_subcommand=True)
+    @slash_command(name="join", invoke_without_subcommand=True)
     async def _join(self, ctx: commands.Context):
         """Joins a voice channel."""
-
         destination = ctx.author.voice.channel
-        if ctx.voice_state.voice:
-            await ctx.voice_state.voice.move_to(destination)
-            return
+        self.voice_states[ctx.guild.id] = await destination.connect(cls=wavelink.Player)
 
-        ctx.voice_state.voice = await destination.connect()
-        # ctx.voice_state.voice = await destination.connect(cls=wavelink.Player)
+    @commands.command(name="play")
+    async def _play(self, ctx: commands.Context, *, search: wavelink.YouTubeTrack):
+        """Plays a video from youtube. Can handle youtube links and general search queries."""
+        if not ctx.voice_client:
+            await ctx.invoke(self._join)
 
-    @commands.command(name="summon")
-    @commands.has_permissions(manage_guild=True)
-    async def _summon(
-        self, ctx: commands.Context, *, channel: discord.VoiceChannel = None
-    ):
-        """Summons the bot to a voice channel.
-        If no channel was specified, it joins your channel.
-        """
+        vc: wavelink.Player = ctx.voice_client
+        setattr(vc, "loop", False)
+        setattr(vc, "bass", "off")
 
-        if not channel and not ctx.author.voice:
-            raise VoiceError(
-                "You are neither connected to a voice channel nor specified a channel to join."
-            )
-
-        destination = channel or ctx.author.voice.channel
-        if ctx.voice_state.voice:
-            await ctx.voice_state.voice.move_to(destination)
-            return
-
-        ctx.voice_state.voice = await destination.connect()
-
-    @commands.command(name="leave", aliases=["disconnect"])
-    @commands.has_permissions(manage_guild=True)
-    async def _leave(self, ctx: commands.Context):
-        """Clears the queue and leaves the voice channel."""
-
-        if not ctx.voice_state.voice:
-            return await ctx.send("Not connected to any voice channel.")
-
-        await ctx.voice_state.stop()
-        del self.voice_states[ctx.guild.id]
-
-    @commands.command(name="volume")
-    async def _volume(self, ctx: commands.Context, *, volume: int):
-        """Sets the volume of the player."""
-
-        if not ctx.voice_state.is_playing:
-            return await ctx.send("Nothing being played at the moment.")
-
-        # if 0 > volume > 100:
-        #     return await ctx.send('Volume must be between 0 and 100')
-
-        ctx.voice_client.source.volume = volume / 100
-        await ctx.send("Volume of the player set to {}%".format(volume))
-
-    @commands.command(name="boost")
-    async def _bassboost(self, ctx: commands.Context, *, scale: int):
-        """Bass boosts"""
-
-        ctx.voice_client.source.ffmpeg_options["options"].replace(
-            "bass=g=1", f"bass=g={scale}"
-        )
-
-        await ctx.send(f"Bass boosted {scale*100}%")
-
-    @commands.command(name="now", aliases=["current", "playing"])
-    async def _now(self, ctx: commands.Context):
-        """Displays the currently playing song."""
-
-        await ctx.send(embed=ctx.voice_state.current.create_embed())
-
-    @commands.command(name="pause")
-    @commands.has_permissions(manage_guild=True)
-    async def _pause(self, ctx: commands.Context):
-        """Pauses the currently playing song."""
-
-        if not ctx.voice_state.is_playing and ctx.voice_state.voice.is_playing():
-            ctx.voice_state.voice.pause()
-            await ctx.message.add_reaction("⏯")
-
-    @commands.command(name="resume")
-    @commands.has_permissions(manage_guild=True)
-    async def _resume(self, ctx: commands.Context):
-        """Resumes a currently paused song."""
-
-        if not ctx.voice_state.is_playing and ctx.voice_state.voice.is_paused():
-            ctx.voice_state.voice.resume()
-            await ctx.message.add_reaction("⏯")
-
-    @commands.command(name="stop")
-    @commands.has_permissions(manage_guild=True)
-    async def _stop(self, ctx: commands.Context):
-        """Stops playing song and clears the queue."""
-
-        ctx.voice_state.songs.clear()
-
-        if not ctx.voice_state.is_playing:
-            ctx.voice_state.voice.stop()
-            await ctx.message.add_reaction("⏹")
-
-    @commands.command(name="skip")
-    async def _skip(self, ctx: commands.Context):
-        """Vote to skip a song. The requester can automatically skip.
-        3 skip votes are needed for the song to be skipped.
-        """
-
-        if not ctx.voice_state.is_playing:
-            return await ctx.send("Not playing any music right now...")
-
-        voter = ctx.message.author
-        if voter == ctx.voice_state.current.requester:
-            await ctx.message.add_reaction("⏭")
-            ctx.voice_state.skip()
-
-        elif voter.id not in ctx.voice_state.skip_votes:
-            ctx.voice_state.skip_votes.add(voter.id)
-            total_votes = len(ctx.voice_state.skip_votes)
-
-            if total_votes >= 2:
-                await ctx.message.add_reaction("⏭")
-                ctx.voice_state.skip()
-            else:
-                await ctx.send(
-                    "Skip vote added, currently at **{}/3**".format(total_votes)
-                )
-
+        if vc.queue.is_empty and not vc.is_playing():
+            await vc.play(search)
+            await ctx.respond(embed=self.create_embed(search, ctx))
         else:
-            await ctx.send("You have already voted to skip this song.")
+            await vc.queue.put_wait(search)
+            await ctx.respond(f"Added **{search.title}** by **{search.author}** to the queue")
 
-    @commands.command(name="queue")
-    async def _queue(self, ctx: commands.Context, *, page: int = 1):
-        """Shows the player's queue.
-        You can optionally specify the page to show. Each page contains 10 elements.
-        """
+        vc.ctx = ctx
+        setattr(vc, "loop", False)
 
-        if len(ctx.voice_state.songs) == 0:
+    @slash_command(name="pause")
+    async def _pause(self, ctx: commands.Context):
+        """Pauses currently playing track."""
+        vc: wavelink.Player = ctx.voice_client
+        if vc.is_playing():
+            await vc.pause()
+            await ctx.message.add_reaction("⏯")
+
+    @slash_command(name="resume")
+    async def _resume(self, ctx: commands.Context):
+        """Resumes currently playing track."""
+        vc: wavelink.Player = ctx.voice_client
+        if vc.is_paused():
+            await vc.resume()
+            await ctx.message.add_reaction("⏯")
+
+    @slash_command(name="volume")
+    async def _volume(self, ctx: commands.Context, level: Option(int, "Volume to set to", min_value=0, max_value=300)):
+        """Adjusts the volume of the bot."""
+        vc: wavelink.Player = ctx.voice_client
+
+        async with ctx.typing():
+            if 0 <= level <= 300:
+                await ctx.respond(f"Adjusting volume from `{vc.volume}%` to `{level}%`")
+                await vc.set_volume(level)
+            else:
+                await ctx.respond("Volume must be within 0% to 300%")
+
+    @slash_command(name="skip")
+    async def _skip(self, ctx: commands.Context):
+        """Skips currently playing track."""
+        vc: wavelink.Player = ctx.voice_client
+        await vc.seek(vc.track.length * 1000)
+        await ctx.message.add_reaction("⏭")
+
+    @slash_command(name="bass")
+    async def _bassboost(self, ctx: commands.Context, level: Option(str, "Level of bass boost", choices=["off", "low", "medium", "high", "ultra", "maximum", "dummyhard"])):
+        """Bass boosts currently playing track."""
+        vc: wavelink.Player = ctx.voice_client
+
+        presets = {
+            "off": [(0, 0), (1, 0)],
+            "low": [(0, 0.25), (1, 0.15)],
+            "medium": [(0, 0.50), (1, 0.25)],
+            "high": [(0, 0.75), (1, 0.50)],
+            "ultra": [(0, 1), (1, 0.75)],
+            "maximum": [(0, 1), (1, 1.0)],
+            "dummyhard": [(0, 1.0), (1, 1.0), (2, 1.0), (3, 1.0), (4, 1.0)] 
+        }
+
+        if level not in presets.keys():
+            return await ctx.send(f"Preset provided must be one of: {', '.join(list(presets.keys())[:-1])}")
+
+        await vc.set_filter(
+            Filter(volume=vc.volume, equalizer=Equalizer(bands=presets[level])),
+            seek=True
+        )
+        await ctx.respond(f"Bass changed from **{vc.bass}** to **{level}**")
+        vc.bass = level
+
+    @slash_command(name="stop")
+    async def _stop(self, ctx: commands.Context):
+        """Stops voice client and disconnects."""
+        vc: wavelink.Player = ctx.voice_client
+
+        await vc.stop()
+        await vc.disconnect(force=True)
+        await ctx.message.add_reaction("⏹")
+
+    @slash_command(name="leave")
+    async def _leave(self, ctx: commands.Context):
+        """Leaves voice channel."""
+        vc: wavelink.Player = ctx.voice_client
+
+        await vc.disconnect(force=True)
+
+    @slash_command(name="now")
+    async def _nowplaying(self, ctx: commands.Context):
+        """Displays currently playing track."""
+        await ctx.send(embed=self.create_embed(ctx.voice_client.track, ctx))
+
+    @slash_command(name="loop")
+    async def _loop(self, ctx: commands.Context):
+        """Loops queue."""
+        vc: wavelink.Player = ctx.voice_client
+
+        try:
+            vc.loop = not vc.loop
+        except Exception:
+            setattr(vc, "loop", True)
+
+        await ctx.reply(f"Turned {'on' if vc.loop else 'off'} looping")
+
+    @slash_command(name="queue")
+    async def _queue(self, ctx: commands.Context, *, page: Option(int, "Page to go to", default=1)):
+        """Displays current contents of queue."""
+        vc: wavelink.Player = ctx.voice_client
+
+        if vc.queue.is_empty:
             return await ctx.send("Empty queue.")
-
+        
         items_per_page = 10
-        pages = math.ceil(len(ctx.voice_state.songs) / items_per_page)
+        pages = math.ceil(vc.queue.count / items_per_page)
 
         start = (page - 1) * items_per_page
         end = start + items_per_page
 
         queue = ""
-        for i, song in enumerate(ctx.voice_state.songs[start:end], start=start):
-            queue += "`{0}.` [**{1.source.title}**]({1.source.url})\n".format(
-                i + 1, song
-            )
+        for i, song in enumerate(list(vc.queue)[start:end], start=start):
+            queue += f"`{i+1}.` [**{song.title}**]({song.uri})\n"
 
         embed = discord.Embed(
-            description="**{} tracks:**\n\n{}".format(len(ctx.voice_state.songs), queue)
-        ).set_footer(text="Viewing page {}/{}".format(page, pages))
+            description=f"**{vc.queue.count} tracks:**\n\n{queue}"
+        ).set_footer(text=f"Viewing page {page}/{pages}")
         await ctx.send(embed=embed)
+            
 
-    @commands.command(name="shuffle")
-    async def _shuffle(self, ctx: commands.Context):
-        """Shuffles the queue."""
+    def create_embed(self, song: wavelink.YouTubeTrack, ctx: commands.Context) -> discord.Embed:
+        embed = (
+            discord.Embed(
+                title="Now Playing",
+                description=f"```css\n{song.title}\n```",
+                color=discord.Color.blurple()
+            )
+            .add_field(name="Duration", value=YTDLSource.parse_duration(int(song.length)))
+            .add_field(name="Requested by", value=ctx.author)
+            .add_field(name="Uploader", value=song.author)
+            .add_field(name="URL", value=f"[Click]({song.uri})")
+            .set_thumbnail(url=song.thumbnail)
+        )
 
-        if len(ctx.voice_state.songs) == 0:
-            return await ctx.send("Empty queue.")
+        return embed
 
-        ctx.voice_state.songs.shuffle()
-        await ctx.message.add_reaction("✅")
+    @commands.Cog.listener()
+    async def on_wavelink_track_end(self, player: wavelink.Player, track: wavelink.Track, reason):
+        ctx = player.ctx
+        vc: wavelink.Player = ctx.voice_client
 
-    @commands.command(name="remove")
-    async def _remove(self, ctx: commands.Context, index: int):
-        """Removes a song from the queue at a given index."""
+        if vc.queue.is_empty:
+            return await vc.stop()
 
-        if len(ctx.voice_state.songs) == 0:
-            return await ctx.send("Empty queue.")
+        if vc.loop:
+            await vc.queue.put_wait(vc.track)
 
-        ctx.voice_state.songs.remove(index - 1)
-        await ctx.message.add_reaction("✅")
-
-    @commands.command(name="loop")
-    async def _loop(self, ctx: commands.Context):
-        """Loops the currently playing song.
-        Invoke this command again to unloop the song.
-        """
-
-        if not ctx.voice_state.is_playing:
-            return await ctx.send("Nothing being played at the moment.")
-
-        # Inverse boolean value to loop and unloop.
-        ctx.voice_state.loop = not ctx.voice_state.loop
-        await ctx.message.add_reaction("✅")
-
-    @commands.command(name="play")
-    async def _play(self, ctx: commands.Context, *, search: str):
-        """Plays a song.
-        If there are songs in the queue, this will be queued until the
-        other songs finished playing.
-        This command automatically searches from various sites if no URL is provided.
-        A list of these sites can be found here: https://rg3.github.io/youtube-dl/supportedsites.html
-        """
-
-        if not ctx.voice_state.voice:
-            await ctx.invoke(self._join)
-
-        async with ctx.typing():
-            try:
-                source = await YTDLSource.create_source(ctx, search, loop=self.bot.loop)
-            except YTDLError as e:
-                await ctx.send(
-                    "An error occurred while processing this request: {}".format(str(e))
-                )
-            else:
-                song = Song(source)
-
-                await ctx.voice_state.songs.put(song)
-                await ctx.send("Enqueued {}".format(str(source)))
-
+        next_song = vc.queue.get()
+        await vc.play(next_song)
+        await ctx.send(embed=self.create_embed(next_song, ctx))
 
     @_join.before_invoke
     @_play.before_invoke
     async def ensure_voice_state(self, ctx: commands.Context):
         if not ctx.author.voice or not ctx.author.voice.channel:
-            raise commands.CommandError("You are not connected to any voice channel.")
-
+            raise commands.CommandError("You are not connected to any voice channel!")
+        
         if ctx.voice_client:
             if ctx.voice_client.channel != ctx.author.voice.channel:
-                raise commands.CommandError("Bot is already in a voice channel.")
+                raise commands.CommandError("Bot is already in another voice channel, sorry :(")
