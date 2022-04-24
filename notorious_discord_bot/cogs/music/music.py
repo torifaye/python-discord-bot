@@ -1,5 +1,8 @@
+import asyncio
 import math
-from wavelink import Equalizer, Filter
+import re
+from wavelink import Equalizer, Filter, SearchableTrack
+from wavelink.ext import spotify
 import os
 import discord
 
@@ -23,7 +26,10 @@ class Music(commands.Cog):
         await self.bot.wait_until_ready()
         
         node = await wavelink.NodePool.create_node(
-            bot=self.bot, host="0.0.0.0", port=2333, password=os.getenv("WAVELINK_PW")
+            bot=self.bot, host="0.0.0.0", port=2333, password=os.getenv("WAVELINK_PW"),
+            spotify_client=spotify.SpotifyClient(
+                client_id=os.getenv("SPOTIFY_CLIENT_ID"), 
+                client_secret=os.getenv("SPOTIFY_CLIENT_SECRET"))
         )
 
     @commands.Cog.listener()
@@ -40,37 +46,63 @@ class Music(commands.Cog):
 
         return True
 
-    async def cog_command_error(self, ctx: commands.Context, error: commands.CommandError):
-        await ctx.send(f"An error occurred: {str(error)}")
+    async def cog_command_error(self, ctx: discord.ApplicationContext, error: discord.ApplicationCommandError):
+        await ctx.send(f"An error occurred: {str(error.__traceback__)}")
 
     @slash_command(name="join", invoke_without_subcommand=True)
-    async def _join(self, ctx: commands.Context):
+    async def _join(self, ctx: discord.ApplicationContext):
         """Joins a voice channel."""
         destination = ctx.author.voice.channel
         self.voice_states[ctx.guild.id] = await destination.connect(cls=wavelink.Player)
 
-    @commands.command(name="play")
-    async def _play(self, ctx: commands.Context, *, search: wavelink.YouTubeTrack):
+    @slash_command(name="play")
+    async def _play(self, ctx: discord.ApplicationContext, *, query: Option(str, "Song source (e.g. youtube link, spotify link, plain search query)")):
         """Plays a video from youtube. Can handle youtube links and general search queries."""
         if not ctx.voice_client:
             await ctx.invoke(self._join)
 
+        youtube_regex = 'https:\/\/www.youtube.com\/(watch\?v=.*|playlist\?list=.*)|https:\/\/youtu.be\/.*'
+        spotify_regex = 'https:\/\/open.spotify.com\/(track|album|playlist)\/(.+)\?si=.+'
+
         vc: wavelink.Player = ctx.voice_client
+        vc.ctx = ctx
         setattr(vc, "loop", False)
         setattr(vc, "bass", "off")
 
-        if vc.queue.is_empty and not vc.is_playing():
-            await vc.play(search)
-            await ctx.respond(embed=self.create_embed(search, ctx))
+        if match := re.match(youtube_regex, query):
+            logger.info(f"YOUTUBE MATCH: {match.groups}")
+            if 'watch' in match.group(1):
+                result = await wavelink.YouTubeTrack.search(query)
+                await vc.queue.put_wait(result)
+            if 'list' in match.group(1):
+                logger.info(query)
+                playlist = await vc.node.get_playlist(wavelink.YouTubePlaylist, query) 
+                for song in playlist.tracks:
+                    vc.queue.put(song)      
+                response = await ctx.respond(f"Added **{len(playlist.tracks)}** song{'s' if len(playlist.tracks) > 1 else ''} to the queue")
+                await response.delete_original_message(delay=5.0)
+        elif groups := re.match(spotify_regex, query):
+            logger.info(groups)
+            async for track in (tracks := spotify.SpotifyTrack.iterator(query=query, partial_tracks=True)):
+                vc.queue.put(track)
+            response = await ctx.respond(f"Added **{tracks._count}** songs to the queue")
+            await response.delete_original_message(delay=5.0)
         else:
-            await vc.queue.put_wait(search)
-            await ctx.respond(f"Added **{search.title}** by **{search.author}** to the queue")
+            result = await wavelink.YouTubeTrack.search(query, return_first=True)
+            await vc.queue.put_wait(result)
+
+        if not vc.is_playing():
+            next_up = vc.queue.get()
+            next_song = await next_up._search() if type(next_up).__name__ == "PartialTrack" else next_up
+            await vc.play(next_song)
+            embed = await ctx.send(embed=self.create_embed(next_song, ctx))
+            await embed.delete(delay=30.0)
 
         vc.ctx = ctx
         setattr(vc, "loop", False)
 
     @slash_command(name="pause")
-    async def _pause(self, ctx: commands.Context):
+    async def _pause(self, ctx: discord.ApplicationContext):
         """Pauses currently playing track."""
         vc: wavelink.Player = ctx.voice_client
         if vc.is_playing():
@@ -78,7 +110,7 @@ class Music(commands.Cog):
             await ctx.message.add_reaction("⏯")
 
     @slash_command(name="resume")
-    async def _resume(self, ctx: commands.Context):
+    async def _resume(self, ctx: discord.ApplicationContext):
         """Resumes currently playing track."""
         vc: wavelink.Player = ctx.voice_client
         if vc.is_paused():
@@ -98,11 +130,12 @@ class Music(commands.Cog):
                 await ctx.respond("Volume must be within 0% to 300%")
 
     @slash_command(name="skip")
-    async def _skip(self, ctx: commands.Context):
+    async def _skip(self, ctx: discord.ApplicationContext):
         """Skips currently playing track."""
         vc: wavelink.Player = ctx.voice_client
         await vc.seek(vc.track.length * 1000)
-        await ctx.message.add_reaction("⏭")
+        response = await ctx.respond("Skipping song ⏭")
+        await response.delete_original_message(delay=5.0)
 
     @slash_command(name="bass")
     async def _bassboost(self, ctx: commands.Context, level: Option(str, "Level of bass boost", choices=["off", "low", "medium", "high", "ultra", "maximum", "dummyhard"])):
@@ -130,28 +163,29 @@ class Music(commands.Cog):
         vc.bass = level
 
     @slash_command(name="stop")
-    async def _stop(self, ctx: commands.Context):
+    async def _stop(self, ctx: discord.ApplicationContext):
         """Stops voice client and disconnects."""
         vc: wavelink.Player = ctx.voice_client
 
         await vc.stop()
         await vc.disconnect(force=True)
-        await ctx.message.add_reaction("⏹")
+        await ctx.respond("Stopping song ⏹")
 
     @slash_command(name="leave")
-    async def _leave(self, ctx: commands.Context):
+    async def _leave(self, ctx: discord.ApplicationContext):
         """Leaves voice channel."""
         vc: wavelink.Player = ctx.voice_client
-
+        
+        await ctx.respond("Goodbye!")
         await vc.disconnect(force=True)
 
     @slash_command(name="now")
-    async def _nowplaying(self, ctx: commands.Context):
+    async def _nowplaying(self, ctx: discord.ApplicationContext):
         """Displays currently playing track."""
-        await ctx.send(embed=self.create_embed(ctx.voice_client.track, ctx))
+        await ctx.respond(embed=self.create_embed(ctx.voice_client.track, ctx))
 
     @slash_command(name="loop")
-    async def _loop(self, ctx: commands.Context):
+    async def _loop(self, ctx: discord.ApplicationContext):
         """Loops queue."""
         vc: wavelink.Player = ctx.voice_client
 
@@ -160,7 +194,7 @@ class Music(commands.Cog):
         except Exception:
             setattr(vc, "loop", True)
 
-        await ctx.reply(f"Turned {'on' if vc.loop else 'off'} looping")
+        await ctx.respond(f"Turned {'on' if vc.loop else 'off'} looping")
 
     @slash_command(name="queue")
     async def _queue(self, ctx: commands.Context, *, page: Option(int, "Page to go to", default=1)):
@@ -178,15 +212,16 @@ class Music(commands.Cog):
 
         queue = ""
         for i, song in enumerate(list(vc.queue)[start:end], start=start):
-            queue += f"`{i+1}.` [**{song.title}**]({song.uri})\n"
+            # queue += f"`{i+1}.` [**{song.title}**]({song.uri})\n"
+            queue += f"`{i+1}.` {song.title}\n"
 
         embed = discord.Embed(
             description=f"**{vc.queue.count} tracks:**\n\n{queue}"
         ).set_footer(text=f"Viewing page {page}/{pages}")
-        await ctx.send(embed=embed)
+        await ctx.respond(embed=embed)
             
 
-    def create_embed(self, song: wavelink.YouTubeTrack, ctx: commands.Context) -> discord.Embed:
+    def create_embed(self, song: wavelink.YouTubeTrack, ctx: discord.ApplicationContext) -> discord.Embed:
         embed = (
             discord.Embed(
                 title="Now Playing",
@@ -213,9 +248,12 @@ class Music(commands.Cog):
         if vc.loop:
             await vc.queue.put_wait(vc.track)
 
-        next_song = vc.queue.get()
+        next_up = vc.queue.get()
+
+        next_song: wavelink.abc.Playable | None = await next_up._search() if type(next_up).__name__ == "PartialTrack" else next_up
         await vc.play(next_song)
-        await ctx.send(embed=self.create_embed(next_song, ctx))
+        embed = await ctx.send(embed=self.create_embed(next_song, ctx))
+        await embed.delete(delay=30.0)
 
     @_join.before_invoke
     @_play.before_invoke
