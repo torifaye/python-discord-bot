@@ -53,7 +53,7 @@ class Music(commands.Cog):
     async def cog_command_error(self, ctx: ApplicationContext, error: discord.ApplicationCommandError):
         output = ''.join(traceback.format_tb(error.__traceback__))
         logger.error(output)
-        await ctx.send(f"An error occurred: {str(error)}")
+        await ctx.send(f"An error occurred: {str(error)}", delete_after=LONG_DELAY)
 
     @slash_command(name="join", invoke_without_subcommand=True)
     async def _join(self, ctx: ApplicationContext):
@@ -109,8 +109,8 @@ class Music(commands.Cog):
         vc: wavelink.Player = ctx.voice_client
         if vc.is_playing():
             await vc.pause()
-            response = await ctx.respond(f"Paused at {self.parse_duration(vc.position)}/{self.parse_duration(vc.track.duration)}")
-            await response.delete_original_response(delay=NORMAL_DELAY)
+            response = await ctx.respond(f"Paused at {self.parse_duration(vc.position / 1000)}/{self.parse_duration(vc.current.duration / 1000)}")
+            await response.delete_original_response(delay=LONG_DELAY)
 
     @slash_command(name="resume")
     async def _resume(self, ctx: ApplicationContext):
@@ -134,7 +134,7 @@ class Music(commands.Cog):
     async def _skip(self, ctx: ApplicationContext):
         """Skips currently playing track."""
         vc: wavelink.Player = ctx.voice_client
-        await vc.seek(vc.track.length * 1000)
+        await vc.seek(vc.current.duration)
         response = await ctx.respond("Skipping song ⏭")
         await response.delete_original_response(delay=SHORT_DELAY)
 
