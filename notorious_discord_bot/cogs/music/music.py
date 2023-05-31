@@ -29,6 +29,7 @@ class Music(commands.Cog):
         await self.bot.wait_until_ready()
 
         node: wavelink.Node = wavelink.Node(uri="http://localhost:2333", password=os.getenv("WAVELINK_PW"))
+        self.node = node
         spotify_client = spotify.SpotifyClient(
                     client_id=os.getenv("SPOTIFY_CLIENT_ID"), 
                     client_secret=os.getenv("SPOTIFY_CLIENT_SECRET"))
@@ -52,6 +53,7 @@ class Music(commands.Cog):
 
     async def cog_command_error(self, ctx: ApplicationContext, error: discord.ApplicationCommandError):
         output = ''.join(traceback.format_tb(error.__traceback__))
+        logger.error(str(error))
         logger.error(output)
         await ctx.send(f"An error occurred: {str(error)}", delete_after=LONG_DELAY)
 
@@ -76,9 +78,9 @@ class Music(commands.Cog):
         if match := re.match(youtube_regex, query):
             logger.info(f"YOUTUBE MATCH: {match.groups}")
             if 'watch' in match.group(1):
-                result = await wavelink.YouTubeTrack.search(query)
-                await vc.queue.put_wait(result[0])
-                response = await ctx.respond(f"Added **{result[0].title}** by **{result[0].author}** to the queue")
+                result = (await self.node.get_tracks(wavelink.YouTubeTrack, query))[0]
+                await vc.queue.put_wait(result)
+                response = await ctx.respond(f"Added **{result.title}** by **{result.author}** to the queue")
                 await response.delete_original_response(delay=SHORT_DELAY)
             if 'list' in match.group(1):
                 playlist = await vc.node.get_playlist(wavelink.YouTubePlaylist, query) 
@@ -88,9 +90,9 @@ class Music(commands.Cog):
                 await response.delete_original_response(delay=SHORT_DELAY)
         elif groups := re.match(spotify_regex, query):
             logger.info(groups)
-            async for track in (tracks := spotify.SpotifyTrack.iterator(query=query)):
-                vc.queue.put(track)
-            response = await ctx.respond(f"Added **{tracks._count}** songs to the queue")
+            track = await spotify.SpotifyTrack.search(query)
+            await vc.queue.put_wait(track)
+            response = await ctx.respond("Added to the queue")
             await response.delete_original_response(delay=SHORT_DELAY)
         else:
             result = await wavelink.YouTubeTrack.search(query, return_first=True)
